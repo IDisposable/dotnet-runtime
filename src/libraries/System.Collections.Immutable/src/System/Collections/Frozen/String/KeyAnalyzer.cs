@@ -61,7 +61,7 @@ namespace System.Collections.Frozen
                         if (HasSufficientUniquenessFactor(set, uniqueStrings))
                         {
                             return CreateAnalysisResults(
-                                uniqueStrings, ignoreCase, minLength, maxLength, index, count);
+                                set, ignoreCase, minLength, maxLength, index, count);
                         }
                     }
 
@@ -82,7 +82,7 @@ namespace System.Collections.Frozen
                             if (HasSufficientUniquenessFactor(set, uniqueStrings))
                             {
                                 return CreateAnalysisResults(
-                                    uniqueStrings, ignoreCase, minLength, maxLength, comparer.Index, count);
+                                    set, ignoreCase, minLength, maxLength, comparer.Index, count);
                             }
                         }
                     }
@@ -94,7 +94,7 @@ namespace System.Collections.Frozen
         }
 
         private static AnalysisResults CreateAnalysisResults(
-            ReadOnlySpan<string> uniqueStrings, bool ignoreCase, int minLength, int maxLength, int index, int count)
+            IEnumerable<string> uniqueStrings, bool ignoreCase, int minLength, int maxLength, int index, int count)
         {
             // Start off by assuming all strings are ASCII
             bool allAsciiIfIgnoreCase = true;
@@ -113,7 +113,7 @@ namespace System.Collections.Frozen
                 foreach (string s in uniqueStrings)
                 {
                     // Get the span for the substring.
-                    ReadOnlySpan<char> substring = count == 0 ? s.AsSpan() : s.Slicer(index, count);
+                    ReadOnlySpan<char> substring = s.AsSpan();
 
                     // If the substring isn't ASCII, bail out to return the results.
                     if (!IsAllAscii(substring))
@@ -245,34 +245,55 @@ namespace System.Collections.Frozen
             public bool RightJustifiedSubstring => HashIndex < 0;
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static ReadOnlySpan<char> Slicer(this string s, int index, int count) => s.AsSpan((index >= 0 ? index : s.Length + index), count);
+        public interface IStrategy
+        {
+            public static abstract bool SliceEquals(ReadOnlySpan<char> x, ReadOnlySpan<char> y);
+            public static abstract int SliceGetHashCode(ReadOnlySpan<char> s);
+        }
+
+        private sealed class OrdinalStrategy : IStrategy
+        {
+            [MethodImpl(MethodImpl.AggressiveInlining)]
+            public static bool SliceEquals(ReadOnlySpan<char> x, ReadOnlySpan<char> y) => x.SequenceEqual(y);
+            [MethodImpl(MethodImpl.AggressiveInlining)]
+            public static int SliceGetHashCode(ReadOnlySpan<char> s) => Hashing.GetHashCodeOrdinal(s);
+        }
+
+        private sealed class CaseInsensitiveStrategy : IStrategy
+        {
+            [MethodImpl(MethodImpl.AggressiveInlining)]
+            public static bool SliceEquals(ReadOnlySpan<char> x, ReadOnlySpan<char> y) => x.Equals(y, StringComparison.OrdinalIgnoreCase);
+            [MethodImpl(MethodImpl.AggressiveInlining)]
+            public static int SliceGetHashCode(ReadOnlySpan<char> s) => Hashing.GetHashCodeOrdinalIgnoreCase(s);
+        }
 
         private abstract class SubstringComparer : IEqualityComparer<string>
         {
             public int Index;   // offset from left side (if positive) or right side (if negative) of the string
             public int Count;   // number of characters in the span
 
+            [MethodImpl(MethodImpl.AggressiveInlining)]
+            public ReadOnlySpan<char> Slicer(string s) => Index < 0 ? s.AsSpan(s.Length + Index, Count) : s.AsSpan(Index, Count);
+
             public abstract bool Equals(string? x, string? y);
             public abstract int GetHashCode(string s);
         }
 
-        private sealed class JustifiedSubstringComparer : SubstringComparer
+        private class SubstringComparer<TStrategy> : SubstringComparer
+            where TStrategy : IStrategy
         {
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public override bool Equals(string? x, string? y) => x!.Slicer(Index, Count).SequenceEqual(y!.Slicer(Index, Count));
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public override int GetHashCode(string s) => Hashing.GetHashCodeOrdinal(s.Slicer(Index, Count));
+            [MethodImpl(MethodImpl.AggressiveInlining)]
+            public override bool Equals(string? x, string? y) => TStrategy.SliceEquals(Slicer(x!), Slicer(y!));
+            [MethodImpl(MethodImpl.AggressiveInlining)]
+            public override int GetHashCode(string s) => TStrategy.SliceGetHashCode(Slicer(s));
         }
 
-        private sealed class JustifiedCaseInsensitiveSubstringComparer : SubstringComparer
+        private sealed class JustifiedCaseInsensitiveSubstringComparer : SubstringComparer<CaseInsensitiveStrategy>
         {
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public override bool Equals(string? x, string? y) => x!.Slicer(Index, Count).Equals(y!.Slicer(Index, Count), StringComparison.OrdinalIgnoreCase);
+        }
 
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public override int GetHashCode(string s) => Hashing.GetHashCodeOrdinalIgnoreCase(s.Slicer(Index, Count));
+        private sealed class JustifiedSubstringComparer : SubstringComparer<OrdinalStrategy>
+        {
         }
     }
 }
